@@ -1,0 +1,7 @@
+.venv/
+__pycache__/
+*.pyc
+study_materials/
+study_materials.db
+study_index.pkl
+.env
