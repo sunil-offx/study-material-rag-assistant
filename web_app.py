@@ -1,3 +1,4 @@
+import hashlib
 import os
 import sqlite3
 import tempfile
@@ -44,8 +45,49 @@ def init_storage():
         );
         """
     )
+    # Users table for auth
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            email TEXT UNIQUE NOT NULL,
+            password_hash TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+        """
+    )
     conn.commit()
     conn.close()
+
+def hash_password(password: str) -> str:
+    return hashlib.sha256(password.encode()).hexdigest()
+
+def authenticate_user(email, password):
+    if email == "admin" and password == "myadminsecret":
+        return True, "admin"
+    
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    cur.execute("SELECT password_hash FROM users WHERE email = ?", (email,))
+    row = cur.fetchone()
+    conn.close()
+    if row and row[0] == hash_password(password):
+        return True, email
+    return False, None
+
+def create_user(email, password):
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        conn.execute(
+            "INSERT INTO users (email, password_hash, created_at) VALUES (?, ?, ?)",
+            (email, hash_password(password), datetime.utcnow().isoformat())
+        )
+        conn.commit()
+        return True
+    except sqlite3.IntegrityError:
+        return False
+    finally:
+        conn.close()
 
 
 def record_upload(filename: str, original_name: str, size_bytes: int):
@@ -141,26 +183,50 @@ def ensure_user_signed_in():
         return
 
     st.markdown("### Welcome to Study Material Assistant")
-    st.write(
-        "Please **sign up or sign in** to start using the application. "
-        "Your session will be remembered for 48 hours in this browser."
-    )
+    st.write("Please **sign in or sign up** to start using the application.")
 
-    choice = st.radio("Select an option", ["Sign up", "Sign in"], horizontal=True)
-    default_name = username or ""
-    input_label = "Choose a user name" if choice == "Sign up" else "User name"
-    name_input = st.text_input(input_label, value=default_name, key="auth_name_input")
+    choice = st.radio("Select an option", ["Sign In", "Sign Up", "Admin Login"], horizontal=True)
+
+    if choice == "Admin Login":
+        st.info("Log in using the admin password.")
+        email_input = "admin"
+        password_input = st.text_input("Admin Password", type="password", key="auth_pass_input_admin")
+    else:
+        email_input = st.text_input("Email / Gmail", key="auth_email_input")
+        password_input = st.text_input("Password", type="password", key="auth_pass_input")
 
     if st.button("Continue"):
-        name = (name_input or "").strip()
-        if not name:
-            st.warning("Please enter a user name.")
+        email = email_input.strip()
+        pwd = password_input.strip()
+        
+        if choice == "Admin Login":
+            if pwd == "myadminsecret":
+                st.session_state["username"] = "admin"
+                st.session_state["is_admin"] = True
+                st.session_state["signed_in_expires"] = now + timedelta(hours=48)
+                st.success("Signed in as Admin!")
+                st.rerun()
+            else:
+                st.error("Invalid admin credentials.")
         else:
-            st.session_state["username"] = name
-            st.session_state["signed_in_expires"] = now + timedelta(hours=48)
-            st.success(f"Signed in as `{name}` (valid for the next 48 hours).")
-            st.rerun()
-
+            if not email or not pwd:
+                st.warning("Please enter both email and password.")
+            elif choice == "Sign Up":
+                if create_user(email, pwd):
+                    st.success("Account created successfully. You can now switch to 'Sign In' and log in.")
+                else:
+                    st.error("An account with this email/Gmail already exists.")
+            elif choice == "Sign In":
+                ok, user_email = authenticate_user(email, pwd)
+                if ok:
+                    st.session_state["username"] = user_email
+                    st.session_state["is_admin"] = (user_email == "admin")
+                    st.session_state["signed_in_expires"] = now + timedelta(hours=48)
+                    st.success(f"Signed in as `{user_email}`.")
+                    st.rerun()
+                else:
+                    st.error("Invalid email or password.")
+                    
     # Stop rendering the rest of the app until the user signs in
     st.stop()
 
@@ -187,17 +253,13 @@ def main():
 
     # Simple account area in sidebar (after initial sign-in gate)
     with st.sidebar:
-        st.subheader("Sign in")
-        if "username" not in st.session_state:
-            st.session_state["username"] = "guest"
-        username_input = st.text_input("User name", value=st.session_state["username"])
-        if st.button("Update user"):
-            name = (username_input or "guest").strip()
-            st.session_state["username"] = name or "guest"
-            st.session_state["signed_in_expires"] = datetime.utcnow() + timedelta(
-                hours=48
-            )
-        st.markdown(f"**Current user:** `{st.session_state['username']}`")
+        st.subheader("Account")
+        st.markdown(f"**Current user:** `{st.session_state.get('username', 'guest')}`")
+        if st.session_state.get("is_admin"):
+            st.markdown("*(Admin Mode)*")
+        if st.button("Sign out"):
+            st.session_state.clear()
+            st.rerun()
 
         st.markdown("---")
         menu = st.radio(
@@ -207,45 +269,48 @@ def main():
         )
 
         st.markdown("---")
-        st.header("Upload & Index")
-        st.write(f"Study folder on disk: `{STUDY_DIR}`")
+        
+        # Only admin should probably see the upload/index options, but we can just show it to everyone or admin
+        if st.session_state.get("is_admin"):
+            st.header("Upload & Index (Admin Only)")
+            st.write(f"Study folder on disk: `{STUDY_DIR}`")
 
-        uploaded_files = st.file_uploader(
-            "Upload study materials (PDF / TXT)",
-            type=["pdf", "txt"],
-            accept_multiple_files=True,
-        )
+            uploaded_files = st.file_uploader(
+                "Upload study materials (PDF / TXT)",
+                type=["pdf", "txt"],
+                accept_multiple_files=True,
+            )
 
-        if uploaded_files:
-            for f in uploaded_files:
-                save_path = STUDY_DIR / f.name
-                try:
-                    with open(save_path, "wb") as out:
-                        out.write(f.getbuffer())
-                    record_upload(
-                        filename=f.name,
-                        original_name=f.name,
-                        size_bytes=len(f.getbuffer()),
+            if uploaded_files:
+                for f in uploaded_files:
+                    save_path = STUDY_DIR / f.name
+                    try:
+                        with open(save_path, "wb") as out:
+                            out.write(f.getbuffer())
+                        record_upload(
+                            filename=f.name,
+                            original_name=f.name,
+                            size_bytes=len(f.getbuffer()),
+                        )
+                    except Exception as e:
+                        st.error(f"Failed to save {f.name}: {e}")
+                st.success("Files uploaded successfully. Remember to rebuild the index.")
+
+            if st.button("Rebuild index from uploaded materials"):
+                with st.spinner("Building index from study materials..."):
+                    try:
+                        ingest()
+                        st.success("Index rebuilt successfully.")
+                    except Exception as e:
+                        st.error(f"Error while ingesting study materials: {e}")
+
+            uploads = load_uploads()
+            if uploads:
+                st.markdown("**Recently uploaded files (from database):**")
+                for filename, original_name, size_bytes, uploaded_at in uploads[:10]:
+                    st.write(
+                        f"- `{original_name}` ({size_bytes} bytes) – stored as `{filename}` at {uploaded_at}"
                     )
-                except Exception as e:
-                    st.error(f"Failed to save {f.name}: {e}")
-            st.success("Files uploaded successfully. Remember to rebuild the index.")
-
-        if st.button("Rebuild index from uploaded materials"):
-            with st.spinner("Building index from study materials..."):
-                try:
-                    ingest()
-                    st.success("Index rebuilt successfully.")
-                except Exception as e:
-                    st.error(f"Error while ingesting study materials: {e}")
-
-        uploads = load_uploads()
-        if uploads:
-            st.markdown("**Recently uploaded files (from database):**")
-            for filename, original_name, size_bytes, uploaded_at in uploads[:10]:
-                st.write(
-                    f"- `{original_name}` ({size_bytes} bytes) – stored as `{filename}` at {uploaded_at}"
-                )
 
     # Main content area depends on selected menu
     if menu == "New study session":
