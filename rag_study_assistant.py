@@ -4,7 +4,7 @@ import pickle
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Tuple
+from typing import List, Tuple, Optional
 
 import numpy as np
 from sklearn.metrics.pairwise import cosine_similarity
@@ -138,7 +138,7 @@ def load_index():
     return index_data
 
 
-def retrieve(query: str, k: int = 5) -> List[Chunk]:
+def retrieve(query: str, k: int = 5, allowed_sources: Optional[List[str]] = None) -> List[Chunk]:
     index = load_index()
     embeddings: np.ndarray = index["embeddings"]
     chunks: List[Chunk] = index["chunks"]
@@ -147,13 +147,21 @@ def retrieve(query: str, k: int = 5) -> List[Chunk]:
     query_emb = embedder.encode([query], convert_to_numpy=True)
 
     sims = cosine_similarity(query_emb, embeddings)[0]
-    top_indices = np.argsort(sims)[::-1][:k]
+    top_indices = np.argsort(sims)[::-1]
 
     top_chunks: List[Chunk] = []
     for idx in top_indices:
         if sims[idx] <= 0:
             continue
-        top_chunks.append(chunks[int(idx)])
+            
+        chunk = chunks[int(idx)]
+        if allowed_sources is not None and chunk.source not in allowed_sources:
+            continue
+            
+        top_chunks.append(chunk)
+        if len(top_chunks) >= k:
+            break
+            
     return top_chunks
 
 
@@ -189,10 +197,10 @@ def answer_question(question: str, chunks: List[Chunk]) -> str:
     client = get_groq_client()
 
     system_prompt = (
-        "You are a strict study assistant. You must answer questions "
+        "You are a helpful and intelligent study assistant. You must answer questions "
         "using ONLY the provided study material excerpts. "
-        "When answering, you MUST provide an analysis of which study material (the source/filename and page) this information comes from. "
-        "First declare the study material analysis, then provide the answer. "
+        "Structure your answers to be highly attractive, readable, and well-formatted, using Markdown features like headings, bullet points, italics, or bold text where appropriate (similar to ChatGPT). "
+        "Do NOT mention the names of the source files, filenames, or page numbers in your response. Just provide the direct, beautifully formatted answer. "
         "If the answer to the question is not clearly supported by the material, explicitly state EXACTLY: "
         "'the study material not found'. "
         "Do not use outside knowledge."
@@ -201,7 +209,7 @@ def answer_question(question: str, chunks: List[Chunk]) -> str:
     user_prompt = (
         f"Study material excerpts:\n\n{context}\n\n"
         f"Question: {question}\n\n"
-        "Answer the question using only the excerpts above, and make sure to explicitly state which study material was used. If it cannot be answered, output EXACTLY 'the study material not found'."
+        "Answer the question beautifully and comprehensively using only the excerpts above. Do NOT mention which study material or page was used. If it cannot be answered from the excerpts, output EXACTLY 'the study material not found'."
     )
 
     completion = client.chat.completions.create(

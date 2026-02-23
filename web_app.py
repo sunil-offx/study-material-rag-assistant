@@ -6,6 +6,12 @@ import subprocess
 from datetime import datetime, timedelta
 
 import streamlit as st
+import importlib
+import sys
+
+import rag_study_assistant
+if 'rag_study_assistant' in sys.modules:
+    importlib.reload(rag_study_assistant)
 
 from rag_study_assistant import (
     STUDY_DIR,
@@ -284,10 +290,23 @@ def main():
                 if fname.lower().endswith(".pdf") or fname.lower().endswith(".txt"):
                     existing_files.append(fname)
         
+        selected_files = []
         if existing_files:
             st.markdown("**Currently uploaded files:**")
             for fname in sorted(existing_files):
-                st.markdown(f"- `{fname}`")
+                col1, col2 = st.columns([0.85, 0.15])
+                with col1:
+                    is_selected = st.checkbox(f"{fname}", value=True, key=f"sel_{fname}")
+                    if is_selected:
+                        selected_files.append(fname)
+                with col2:
+                    if st.button("❌", key=f"del_{fname}", help="Remove file"):
+                        try:
+                            os.remove(os.path.join(STUDY_DIR, fname))
+                        except Exception as e:
+                            st.error(f"Failed to delete {fname}: {e}")
+                        st.rerun()
+        st.session_state["selected_files"] = selected_files
 
         if "file_uploader_key" not in st.session_state:
             st.session_state["file_uploader_key"] = 1
@@ -349,7 +368,8 @@ def main():
         if st.button("Get answer", type="primary") and question.strip():
             with st.spinner("Retrieving relevant passages and generating answer..."):
                 try:
-                    chunks = retrieve(question, k=5)
+                    allowed = st.session_state.get("selected_files", [])
+                    chunks = retrieve(question, k=5, allowed_sources=allowed)
                     if not chunks:
                         st.warning(
                             "No relevant passages found in your study materials. "
@@ -364,17 +384,8 @@ def main():
                     st.error(f"Error while answering the question: {e}")
                     return
 
-            st.markdown("### Answer")
-            st.write(answer)
-
-            with st.expander("Show retrieved study material passages"):
-                for i, ch in enumerate(chunks, start=1):
-                    location = f"{ch.source}"
-                    if ch.page is not None:
-                        location += f", page {ch.page}"
-                    st.markdown(f"**Passage {i} – {location}**")
-                    st.write(ch.text)
-                    st.markdown("---")
+            st.markdown("---")
+            st.markdown(answer)
 
     elif menu == "History":
         st.subheader("History")
