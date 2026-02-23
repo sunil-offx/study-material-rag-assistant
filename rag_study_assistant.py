@@ -184,25 +184,24 @@ def get_groq_client() -> OpenAI:
 def answer_question(question: str, chunks: List[Chunk]) -> str:
     context = build_context(chunks)
     if not context:
-        return (
-            "I could not find any relevant information in your study materials "
-            "to answer this question."
-        )
+        return "the study material not found"
 
     client = get_groq_client()
 
     system_prompt = (
         "You are a strict study assistant. You must answer questions "
         "using ONLY the provided study material excerpts. "
-        "If the answer is not clearly supported by the material, say "
-        "'I cannot answer this from the provided study materials.' "
+        "When answering, you MUST provide an analysis of which study material (the source/filename and page) this information comes from. "
+        "First declare the study material analysis, then provide the answer. "
+        "If the answer to the question is not clearly supported by the material, explicitly state EXACTLY: "
+        "'the study material not found'. "
         "Do not use outside knowledge."
     )
 
     user_prompt = (
         f"Study material excerpts:\n\n{context}\n\n"
         f"Question: {question}\n\n"
-        "Answer the question using only the excerpts above."
+        "Answer the question using only the excerpts above, and make sure to explicitly state which study material was used. If it cannot be answered, output EXACTLY 'the study material not found'."
     )
 
     completion = client.chat.completions.create(

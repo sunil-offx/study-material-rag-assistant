@@ -2,6 +2,7 @@ import hashlib
 import os
 import sqlite3
 import tempfile
+import subprocess
 from datetime import datetime, timedelta
 
 import streamlit as st
@@ -262,28 +263,47 @@ def main():
             st.rerun()
 
         st.markdown("---")
+        menu_options = ["New study session", "History"]
+        if st.session_state.get("is_admin"):
+            menu_options.append("Manage GitHub")
+
         menu = st.radio(
             "Menu",
-            ["New study session", "History"],
+            menu_options,
             index=0,
         )
 
         st.markdown("---")
         
-        # Only admin should probably see the upload/index options, but we can just show it to everyone or admin
-        if st.session_state.get("is_admin"):
-            st.header("Upload & Index (Admin Only)")
-            st.write(f"Study folder on disk: `{STUDY_DIR}`")
+        st.header("Upload & Index")
+        st.write(f"Study folder on disk: `{STUDY_DIR}`")
 
-            uploaded_files = st.file_uploader(
-                "Upload study materials (PDF / TXT)",
-                type=["pdf", "txt"],
-                accept_multiple_files=True,
-            )
+        existing_files = []
+        if os.path.exists(STUDY_DIR):
+            for fname in os.listdir(STUDY_DIR):
+                if fname.lower().endswith(".pdf") or fname.lower().endswith(".txt"):
+                    existing_files.append(fname)
+        
+        if existing_files:
+            st.markdown("**Currently uploaded files:**")
+            for fname in sorted(existing_files):
+                st.markdown(f"- `{fname}`")
 
-            if uploaded_files:
-                for f in uploaded_files:
-                    save_path = STUDY_DIR / f.name
+        if "file_uploader_key" not in st.session_state:
+            st.session_state["file_uploader_key"] = 1
+
+        uploaded_files = st.file_uploader(
+            "Upload study materials (PDF / TXT)",
+            type=["pdf", "txt"],
+            accept_multiple_files=True,
+            key=str(st.session_state["file_uploader_key"]),
+        )
+
+        if uploaded_files:
+            new_files = False
+            for f in uploaded_files:
+                save_path = STUDY_DIR / f.name
+                if not os.path.exists(save_path):
                     try:
                         with open(save_path, "wb") as out:
                             out.write(f.getbuffer())
@@ -292,25 +312,23 @@ def main():
                             original_name=f.name,
                             size_bytes=len(f.getbuffer()),
                         )
+                        new_files = True
                     except Exception as e:
                         st.error(f"Failed to save {f.name}: {e}")
-                st.success("Files uploaded successfully. Remember to rebuild the index.")
+            if new_files:
+                st.success("Files uploaded successfully. You can upload more files step by step.")
+                st.session_state["file_uploader_key"] += 1
+                st.rerun()
 
-            if st.button("Rebuild index from uploaded materials"):
-                with st.spinner("Building index from study materials..."):
-                    try:
-                        ingest()
-                        st.success("Index rebuilt successfully.")
-                    except Exception as e:
-                        st.error(f"Error while ingesting study materials: {e}")
+        if st.button("Rebuild index from uploaded materials"):
+            with st.spinner("Building index from study materials..."):
+                try:
+                    ingest()
+                    st.success("Index rebuilt successfully.")
+                except Exception as e:
+                    st.error(f"Error while ingesting study materials: {e}")
 
-            uploads = load_uploads()
-            if uploads:
-                st.markdown("**Recently uploaded files (from database):**")
-                for filename, original_name, size_bytes, uploaded_at in uploads[:10]:
-                    st.write(
-                        f"- `{original_name}` ({size_bytes} bytes) – stored as `{filename}` at {uploaded_at}"
-                    )
+
 
     # Main content area depends on selected menu
     if menu == "New study session":
@@ -398,6 +416,28 @@ def main():
                             st.rerun()
                     with cols[1]:
                         st.write(f"Created at: {created_at}")
+                        
+    elif menu == "Manage GitHub" and st.session_state.get("is_admin"):
+        st.subheader("Manage GitHub Repository (Admin Only)")
+        st.caption("Sync your latest changes and study materials to GitHub directly from the app.")
+        
+        commit_msg = st.text_input("Commit Message", value="Update study materials and application files")
+        
+        if st.button("Commit and Push to GitHub"):
+            with st.spinner("Syncing to GitHub..."):
+                try:
+                    subprocess.run(["git", "add", "."], check=True, capture_output=True, text=True)
+                    res_commit = subprocess.run(["git", "commit", "-m", commit_msg], capture_output=True, text=True)
+                    res_push = subprocess.run(["git", "push", "origin", "main"], check=True, capture_output=True, text=True)
+                    
+                    st.success("Successfully pushed to GitHub!")
+                    with st.expander("Show Logs"):
+                        st.text("Commit Log:\n" + res_commit.stdout + res_commit.stderr)
+                        st.text("Push Log:\n" + res_push.stdout + res_push.stderr)
+                except subprocess.CalledProcessError as e:
+                    st.error("Failed to sync with GitHub.")
+                    with st.expander("Show Error Details"):
+                        st.text(e.stderr or e.stdout)
 
 
 if __name__ == "__main__":
